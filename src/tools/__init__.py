@@ -12,7 +12,7 @@ from .builtin.rag_tool import RAGTool
 # from .builtin.terminal_tool import TerminalTool
 
 # 协议工具
-from .builtin.protocol_tools import MCPTool, A2ATool, ANPTool
+from .builtin.protocol_tools import MCPTool
 
 # 评估工具（第12章）
 # from .builtin.bfcl_evaluation_tool import BFCLEvaluationTool

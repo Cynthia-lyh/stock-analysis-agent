@@ -1,8 +1,13 @@
 """StockInsightAgent — Gradio 前端"""
 import threading
+import os
+import sys
 import queue
 import gradio as gr
 from src.agents import ReActAgent
+from src.core import AgentBrain
+from pathlib import Path
+from src.tools import MemoryTool, RAGTool,ToolRegistry,MCPTool
 # from memory import (
 #     memory_get_watchlist, memory_add_watchlist, memory_remove_watchlist,
 #     memory_get_history, memory_get_preferences,
@@ -15,11 +20,36 @@ _agent = None
 def get_agent():
     global _agent
     if _agent is None:
-        _agent = ReActAgent()
+        brain = AgentBrain()
+        # 获取项目根目录（假设当前在 src/agents/）
+        project_root = Path(__file__).parent
+
+        # 1. 使用 -m 方式运行，而不是直接跑文件
+        # 模块名：src.mcp.mcpServer（注意没有 .py）
+        module_name = "src.mcp.mcpServer"
+
+        # 2. 关键：将项目根目录加入环境变量，确保子进程能找到包
+        env = os.environ.copy()
+        # 将项目根目录添加到 PYTHONPATH
+        python_path = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{project_root}:{python_path}" if python_path else str(project_root)
+
+        # 3. 启动命令
+        weather_tool = MCPTool(server_command=
+            [sys.executable, "-m", module_name],
+            cwd=str(project_root),  # 工作目录设为根目录
+            env=env             # 传入修正后的环境变量
+        )
+        _agent = ReActAgent(
+            name="股票研究助手",
+            llm=brain
+        )
+        _agent.add_tool(weather_tool)
+
     return _agent
 
 
-def _run_with_capture(q: queue.Queue, agent, mode: str, msg: str):
+def _run_with_capture(q: queue.Queue, agent, msg: str):
     import io, sys
     import contextlib
     buffer = io.StringIO()
@@ -55,12 +85,7 @@ def _run_with_capture(q: queue.Queue, agent, mode: str, msg: str):
 
     sys.stdout.is_active = True
     try:
-        if mode == "深度分析 (PlanSolve)":
-            result = agent.plan_solve(msg)
-        elif mode == "批判分析 (Reflection)":
-            result = agent.reflect(msg)
-        else:
-            result = agent.react(msg)
+        result = agent.run(msg)
     except Exception as e:
         result = f"分析出错: {e}"
     finally:
@@ -69,7 +94,7 @@ def _run_with_capture(q: queue.Queue, agent, mode: str, msg: str):
     q.result = result or ""
 
 
-def respond_stream(message: str, history: list, mode: str, agent=None):
+def respond_stream(message: str, history: list, agent=None):
     if agent is None:
         agent = get_agent()
 
@@ -126,7 +151,7 @@ def respond_stream(message: str, history: list, mode: str, agent=None):
     history.append({"role": "assistant", "content": "..."})
 
     q = queue.Queue()
-    t = threading.Thread(target=_run_with_capture, args=(q, agent, mode, msg), daemon=True)
+    t = threading.Thread(target=_run_with_capture, args=(q, agent, msg), daemon=True)
     t.start()
 
     collected = []
@@ -440,17 +465,17 @@ with gr.Blocks(title="StockInsightAgent") as app:
     # ── 事件绑定 ──
     msg_input.submit(
         fn=respond_stream,
-        inputs=[msg_input, chatbot, mode_radio, agent_state],
+        inputs=[msg_input, chatbot, agent_state],
         outputs=[chatbot, msg_input, agent_state],
     )
     submit_btn.click(
         fn=respond_stream,
-        inputs=[msg_input, chatbot, mode_radio, agent_state],
+        inputs=[msg_input, chatbot, agent_state],
         outputs=[chatbot, msg_input, agent_state],
     )
 
     def quick_action(action, history, agent):
-        for result in respond_stream(action, history, "快速分析 (ReAct)", agent):
+        for result in respond_stream(action, history, agent):
             pass
         return result[0], result[2]
 

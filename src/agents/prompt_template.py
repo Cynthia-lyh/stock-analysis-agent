@@ -63,7 +63,4 @@ ${tool_list}
 - 当需要使用mcp工具时，使用 [TOOL_CALL:tool_name:参数字典] 调用
 ⸻
 
-环境信息：
-
-操作系统：${operating_system}
 """

@@ -2,12 +2,16 @@ import ast
 import inspect
 import os
 import re
+import sys
 from string import Template
 from typing import List, Callable, Tuple, Optional
+from pathlib import Path
 
 from dotenv import load_dotenv
-import platform
-from ..llm import AgentBrain
+from ..core import AgentBrain
+from ..core import Agent
+from ..core import Message
+from ..core.config import Config
 
 from .prompt_template import react_system_prompt_template
 
@@ -16,12 +20,38 @@ from ..tools import MemoryTool, RAGTool,ToolRegistry,MCPTool
 # 加载环境变量
 load_dotenv()
 
-class ReActAgent:
-    def __init__(self,tools:ToolRegistry = None,project_directory:str = None):
-        self.tools = tools
-        # self.model = model
-        self.project_directory = project_directory
-        self.brain = AgentBrain()
+class ReActAgent(Agent):
+    def __init__(
+        self,
+        name: str,
+        llm,
+        tool_registry: Optional[ToolRegistry] = None,
+        system_prompt: Optional[str] = None,
+        config: Optional[Config] = None,
+        max_steps: int = 5,
+    ):
+        """
+        初始化ReActAgent
+
+        Args:
+            name: Agent名称
+            llm: LLM实例
+            tool_registry: 工具注册表（可选，如果不提供则创建空的工具注册表）
+            system_prompt: 系统提示词
+            config: 配置对象
+            max_steps: 最大执行步数
+            custom_prompt: 自定义提示词模板
+        """
+        super().__init__(name, system_prompt, config)
+        self.llm = llm
+        # 如果没有提供tool_registry，创建一个空的
+        if tool_registry is None:
+            self.tool_registry = ToolRegistry()
+        else:
+            self.tool_registry = tool_registry
+
+        self.max_steps = max_steps
+        self.current_history: List[str] = []
 
     def run(self,user_input:str):
         messages = [
@@ -36,10 +66,12 @@ class ReActAgent:
         # result = self._execute_tool_call(tool_calls['tool_name'], tool_calls['parameters'])
         # print(f"tool_calls: {tool_calls}")
         # print(f"🎬 行动: {result}")
-        while True:
+        current_step = 0
+        while current_step < self.max_steps:
+            current_step += 1
 
             #请求模型
-            content = self.brain.think(messages)
+            content = self.llm.think(messages = messages)
             messages.append({"role": "assistant", "content": content})
             print(f"\n\n模型回复：{content}")
             #检测 Though
@@ -51,6 +83,9 @@ class ReActAgent:
             # 检测模型是否输出 Final Answer，如果是的话，直接返回
             if "<final_answer>" in content:
                 final_answer = re.search(r"<final_answer>(.*?)</final_answer>", content, re.DOTALL)
+                # 保存到历史记录
+                self.add_message(Message(user_input, "user"))
+                self.add_message(Message(final_answer.group(1), "assistant"))
                 return final_answer.group(1)
 
             #检测 Action
@@ -64,30 +99,24 @@ class ReActAgent:
             # 执行工具调用
             tool_calls = self._parse_tool_calls(action)
             result = self._execute_tool_call(tool_calls['tool_name'], tool_calls['parameters'])
-            print(f"🎬 行动: {result}")
-            
-            # print(f"\n\n🔧 Action: {tool_name}({', '.join(args)})")
-
-            #只有终端命令才需要询问用户，其他的工具直接执行
-            # should_continue = input(f"\n\n是否继续?(Y/N)") if tool_name == "run_terminal_command" else "y"
-            # if should_continue.lower() != 'y':
-            #     print("\n\n操作已取消。")
-            #     return "操作被用户取消"
-
-            # try:
-            #     # observation = self.tools[tool_name](*args)
-            #     observation = self.tools.execute_tool(tool_name, tool_input)
-            # except Exception as e:
-            #     observation = f"工具执行错误：{str(e)}"
 
             print(f"\n\n🔍 Observation：{result}")
             obs_msg = f"<observation>{result}</observation>"
             messages.append({"role": "user", "content": obs_msg})
+            
+        print("⏰ 已达到最大步数，流程终止。")
+        final_answer = "抱歉，我无法在限定步数内完成这个任务。"
+        
+        # 保存到历史记录
+        self.add_message(Message(user_input, "user"))
+        self.add_message(Message(final_answer, "assistant"))
+        
+        return final_answer
 
     def get_tool_list(self) -> str:
         """生成工具列表字符串，包含函数签名和简要说明"""
         tool_descriptions = []
-        for func in self.tools.values():
+        for func in self.tool_registry.values():
             name = func.__name__
             signature = str(inspect.signature(func))
             doc = inspect.getdoc(func)
@@ -97,14 +126,13 @@ class ReActAgent:
 
     def render_system_prompt(self, tsystem_prompt_template: str) -> str:
         """渲染系统提示模板，替换变量"""
-        tool_list = self.tools.get_tools_description()
+        tool_list = self.tool_registry.get_tools_description()
         # file_list = ", ".join(
         #     os.path.abspath(os.path.join(self.project_directory, f)) 
         #     for f in os.listdir(self.project_directory)
         # )
         # print(f"📂 当前目录下文件列表：{self.project_directory}")
         return Template(tsystem_prompt_template).substitute(
-            operating_system=self.get_operating_system_name(),
             tool_list=tool_list
         )
 
@@ -157,23 +185,23 @@ class ReActAgent:
 
         如果工具是可展开的（expandable=True），会自动展开为多个独立工具
         """
-        if not self.tools:
+        if not self.tool_registry:
             from tools.registry import ToolRegistry
-            self.tools = ToolRegistry()
+            self.tool_registry = ToolRegistry()
             self.enable_tool_calling = True
 
         # 直接使用 ToolRegistry 的 register_tool 方法
         # ToolRegistry 会自动处理工具展开
-        self.tools.register_tool(tool, auto_expand=auto_expand)
+        self.tool_registry.register_tool(tool, auto_expand=auto_expand)
 
     def _execute_tool_call(self, tool_name: str, parameters: str) -> str:
         """执行工具调用"""
-        if not self.tools:
+        if not self.tool_registry:
             return f"❌ 错误：未配置工具注册表"
 
         try:
             # 获取Tool对象
-            tool = self.tools.get_tool(tool_name)
+            tool = self.tool_registry.get_tool(tool_name)
             if not tool:
                 return f"❌ 错误：未找到工具 '{tool_name}'"
 
@@ -240,10 +268,10 @@ class ReActAgent:
         Returns:
             类型转换后的参数字典
         """
-        if not self.tools:
+        if not self.tool_registry:
             return param_dict
 
-        tool = self.tools.get_tool(tool_name)
+        tool = self.tool_registry.get_tool(tool_name)
         if not tool:
             return param_dict
 
@@ -307,10 +335,6 @@ class ReActAgent:
                 param_dict['action'] = 'search'
             elif 'text' in param_dict:
                 param_dict['action'] = 'add_text'
-        elif tool_name == 'mcp':
-            if 'tool_name' in param_dict and 'params' in param_dict:
-                param_dict['action'] = 'call_tool'
-                print(f"推断 action 为 call_tool，工具名称: {param_dict['tool_name']}, 参数: {param_dict['params']}")
 
 
         return param_dict
@@ -396,297 +420,55 @@ class ReActAgent:
             # 如果解析失败，返回原始字符串
             return arg_str
 
-    def get_operating_system_name(self):
-        os_map = {
-            "Darwin": "macOS",
-            "Windows": "Windows",
-            "Linux": "Linux"
-        }
-
-        return os_map.get(platform.system(), "Unknown")
-
-
-def demo_simple_agent_with_memory():
-    """演示1: SimpleAgent + MemoryTool - 智能记忆助手"""
-    print("🧠 演示1: SimpleAgent + 记忆工具（自动工具调用）")
-    print("=" * 50)
-
-    # 创建记忆工具
-    memory_tool = MemoryTool(
-        user_id="demo_user_001",
-        memory_types=["working", "episodic", "semantic"]
-    )
-
-    # 创建工具注册表
-    tool_registry = ToolRegistry()
-    tool_registry.register_tool(memory_tool)
-
-    print("💬 开始智能对话演示...")
-    agent = ReActAgent(tools=tool_registry)
-
-    # 模拟多轮对话
-    conversations = [
-        "你好！我叫李明，是一名软件工程师，专门做Python开发",
-        "我最近在学习机器学习，特别对深度学习感兴趣",
-        "你能推荐一些Python机器学习的库吗？",
-        "你还记得我的名字和职业吗？请结合我的背景给我一些学习建议"
-    ]
-
-    for i, user_input in enumerate(conversations, 1):
-        print(f"\n--- 对话轮次 {i} ---")
-        print(f"👤 用户: {user_input}")
-
-        # SimpleAgent会自动使用memory工具
-        response = agent.run(user_input)
-        print(f"🤖 助手: {response}")
-
-    # 显示记忆摘要
-    print(f"\n📊 最终记忆系统状态:")
-    summary = memory_tool.run({"action": "summary"})
-    print(summary)
-
-    # return memory_tool
-
-def demo_four_memory_types():
-    """演示4: 四种记忆类型详细展示"""
-    print("\n\n🧠 演示4: 四种记忆类型详细展示")
-    print("=" * 50)
-
-    # 创建支持所有记忆类型的工具
-    memory_tool = MemoryTool(
-        user_id="memory_types_demo",
-        memory_types=["working", "episodic", "semantic", "perceptual"]
-    )
-
-    print("📋 四种记忆类型特点和使用场景:")
-
-    # 1. 工作记忆演示
-    print("\n1️⃣ WorkingMemory (工作记忆) - 临时信息，容量有限")
-    working_memories = [
-        "用户刚才询问了Python函数的定义",
-        "当前正在讨论面向对象编程概念",
-        "用户表示对装饰器概念感到困惑",
-        "需要为用户提供更多实例说明"
-    ]
-
-    for i, content in enumerate(working_memories):
-        result = memory_tool.run({
-            "action": "add",
-            "content": content,
-            "memory_type": "working",
-            "importance": 0.5 + i * 0.1,
-            "context_type": "conversation"
-        })
-        print(f"  ✅ 工作记忆 {i+1}: {content[:30]}...")
-
-    # 2. 情景记忆演示
-    print("\n2️⃣ EpisodicMemory (情景记忆) - 具体事件，时间序列")
-    episodic_memories = [
-        {
-            "content": "2024年3月15日，用户张三首次使用系统学习Python",
-            "event_type": "first_interaction",
-            "location": "在线学习平台",
-            "emotional_tone": "curious"
-        },
-        {
-            "content": "用户完成了第一个Python练习：Hello World程序",
-            "event_type": "milestone",
-            "achievement": "first_program",
-            "difficulty": "beginner"
-        },
-        {
-            "content": "用户在学习列表操作时遇到困难，经过指导后理解了概念",
-            "event_type": "problem_solving",
-            "topic": "python_lists",
-            "outcome": "success"
-        }
-    ]
-
-    for i, memory_data in enumerate(episodic_memories):
-        content = memory_data.pop("content")
-        result = memory_tool.run({
-            "action": "add",
-            "content": content,
-            "memory_type": "episodic",
-            "importance": 0.7 + i * 0.05,
-            **memory_data
-        })
-        print(f"  ✅ 情景记忆 {i+1}: {content[:40]}...")
-
-    # 3. 语义记忆演示
-    print("\n3️⃣ SemanticMemory (语义记忆) - 抽象知识，概念关联")
-    semantic_memories = [
-        {
-            "content": "用户张三是计算机专业大二学生，Python基础薄弱",
-            "category": "user_profile",
-            "concepts": ["student", "computer_science", "python", "beginner"]
-        },
-        {
-            "content": "Python是解释型、面向对象的高级编程语言",
-            "category": "programming_concepts",
-            "concepts": ["python", "interpreted", "oop", "high_level"]
-        },
-        {
-            "content": "用户偏好通过实例学习，不喜欢纯理论讲解",
-            "category": "learning_preferences",
-            "concepts": ["practical_learning", "examples", "hands_on"]
-        }
-    ]
-
-    for i, memory_data in enumerate(semantic_memories):
-        content = memory_data.pop("content")
-        result = memory_tool.run({
-            "action": "add",
-            "content": content,
-            "memory_type": "semantic",
-            "importance": 0.8 + i * 0.05,
-            **memory_data
-        })
-        print(f"  ✅ 语义记忆 {i+1}: {content[:40]}...")
-
-    # 4. 感知记忆演示
-    print("\n4️⃣ PerceptualMemory (感知记忆) - 多模态信息")
-    perceptual_memories = [
-        {
-            "content": "用户上传的Python代码截图，包含函数定义示例",
-            "modality": "image",
-            "file_path": "./uploads/python_function.png",
-            "extracted_text": "def greet(name): return f'Hello, {name}!'"
-        },
-        {
-            "content": "用户录制的语音问题：如何使用Python处理文件？",
-            "modality": "audio",
-            "file_path": "./audio/question_001.wav",
-            "duration": 12.5,
-            "language": "chinese"
-        },
-        {
-            "content": "用户分享的编程教程视频链接",
-            "modality": "video",
-            "file_path": "https://example.com/python_tutorial.mp4",
-            "topic": "python_basics"
-        }
-    ]
-
-    for i, memory_data in enumerate(perceptual_memories):
-        content = memory_data.pop("content")
-        result = memory_tool.run({
-            "action": "add",
-            "content": content,
-            "memory_type": "perceptual",
-            "importance": 0.6 + i * 0.1,
-            **memory_data
-        })
-        print(f"  ✅ 感知记忆 {i+1}: {content[:40]}...")
-
-    # 演示跨类型搜索
-    print("\n🔍 跨类型记忆搜索演示:")
-    search_queries = [
-        ("Python", "搜索所有与Python相关的记忆"),
-        ("用户", "搜索用户相关信息"),
-        ("学习", "搜索学习相关记忆")
-    ]
-
-    for query, desc in search_queries:
-        print(f"\n  {desc} ('{query}'):")
-        result = memory_tool.run({
-            "action": "search",
-            "query": query,
-            "limit": 3,
-            "min_importance": 0.5
-        })
-        print(f"    {result}")
-
-    # 显示记忆统计
-    print(f"\n📊 记忆系统统计:")
-    stats = memory_tool.run({"action": "stats"})
-    print(stats)
-
-    summary = memory_tool.run({"action": "summary", "limit": 8})
-    print(f"\n📋 记忆摘要:")
-    print(summary)
-
-def demo_combined_memory_and_rag():
-    """演示3: Memory + RAG 组合 - 超级智能助手"""
-    print("\n\n🚀 演示3: Memory + RAG 组合（超级智能助手）")
-    print("=" * 50)
-
-    # 创建LLM
-    llm = AgentBrain()
-
-    # 创建记忆工具
-    memory_tool = MemoryTool(
-        user_id="combo_user",
-        memory_types=["working", "episodic", "semantic"]
-    )
-
-    # 创建RAG工具
-    rag_tool = RAGTool(
-        knowledge_base_path="./combo_knowledge_base"
-    )
-
-    # 创建工具注册表并注册两个工具
-    tool_registry = ToolRegistry()
-    tool_registry.register_tool(memory_tool)
-    tool_registry.register_tool(rag_tool)
-
-    # 创建超级智能助手
-    agent = ReActAgent(tools=tool_registry)
-
-    print("📚 构建专业知识库...")
-
-    # 添加编程学习知识
-    knowledge_items = [
-        ("Python编程最佳实践：1. 使用虚拟环境管理依赖 2. 遵循PEP8代码规范 3. 编写单元测试 4. 使用类型提示 5. 编写清晰的文档字符串", "python_best_practices"),
-        ("初学者Python学习路径：基础语法 → 数据结构 → 面向对象编程 → 标准库 → 第三方库 → 项目实践", "python_learning_path"),
-        ("Python数据科学工具栈：NumPy(数值计算) → Pandas(数据处理) → Matplotlib/Seaborn(可视化) → Scikit-learn(机器学习) → Jupyter Notebook(交互式开发)", "data_science_stack")
-    ]
-
-    for content, doc_id in knowledge_items:
-        result = rag_tool.run({"action": "add_text", "text": content, "document_id": doc_id})
-        print(f"  ✅ 已添加: {doc_id}")
-
-    print(f"\n💬 开始超级智能对话演示...")
-
-    # 模拟复杂的个性化学习对话
-    conversations = [
-        "你好！我是王小明，刚开始学习Python编程，目标是成为数据科学家",
-        "我应该按什么顺序学习Python？",
-        "我已经掌握了基础语法，下一步应该学什么？",
-        "根据我的学习目标和进度，给我制定一个详细的学习计划"
-    ]
-
-    for i, user_input in enumerate(conversations, 1):
-        print(f"\n--- 对话轮次 {i} ---")
-        print(f"👤 用户: {user_input}")
-
-        # SimpleAgent会智能地使用memory和rag工具
-        response = agent.run(user_input)
-        print(f"🤖 助手: {response}")
-
-    print(f"\n📊 最终系统状态:")
-    print("🧠 记忆系统:")
-    memory_summary = memory_tool.run({"action": "summary"})
-    print(memory_summary)
-
-    print(f"\n🔍 知识库系统:")
-    rag_stats = rag_tool.run({"action": "stats"})
-    print(rag_stats)
-
-    # return memory_tool, rag_tool    
 
 def demo_mcp_tool():
+    brain = AgentBrain()
     # 添加天气 MCP 工具
     server_script = os.path.join(os.path.dirname(__file__), "mcpServer.py")
     weather_tool = MCPTool(server_command=["python", server_script])
     tool_registry = ToolRegistry()
-    assistant = ReActAgent(tools=tool_registry)
+    assistant = ReActAgent(name="TestAgent",llm=brain,tool_registry=tool_registry)
     assistant.add_tool(weather_tool)
-    print(f"121212{assistant.tools.get_tools_description()}")
+    print(f"121212{assistant.tool_registry.get_tools_description()}")
 
     print("\n查询北京天气：")
     response = assistant.run("北京今天天气怎么样？")
     print(f"回答: {response}\n")
+
+def test():
+    # 创建 ReActAgent 实例
+    brain = AgentBrain()
+    # 获取项目根目录（假设当前在 src/agents/）
+    project_root = Path(__file__).parent.parent.parent
+
+    # 1. 使用 -m 方式运行，而不是直接跑文件
+    # 模块名：src.mcp.mcpServer（注意没有 .py）
+    module_name = "src.mcp.mcpServer"
+
+    # 2. 关键：将项目根目录加入环境变量，确保子进程能找到包
+    env = os.environ.copy()
+    # 将项目根目录添加到 PYTHONPATH
+    python_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{project_root}:{python_path}" if python_path else str(project_root)
+
+    # 3. 启动命令
+    weather_tool = MCPTool(server_command=
+        [sys.executable, "-m", module_name],
+        cwd=str(project_root),  # 工作目录设为根目录
+        env=env             # 传入修正后的环境变量
+    )
+    agent = ReActAgent(name="TestAgent",llm=brain)
+    agent.add_tool(weather_tool)
+
+    # 添加工具
+    # agent.add_tool(MemoryTool())
+    # agent.add_tool(RAGTool())
+
+    # 测试运行
+    print(f"121212{agent.tool_registry.get_tools_description()}")
+    user_input = "广州今天天气如何"
+    response = agent.run(user_input)
+    print(f"最终回答: {response}")
 
 
 def read_file(file_path):
@@ -706,3 +488,10 @@ def run_terminal_command(command):
     run_result = subprocess.run(command, shell=True, capture_output=True, text=True)
     print(f"命令执行结果：{run_result.stdout}")
     return f"执行成功：{run_result.stdout}" if run_result.returncode == 0 else f"执行失败：{run_result.stderr}"
+
+def main():
+    test()
+    # demo_mcp_tool()
+
+if __name__ == "__main__":
+    main()

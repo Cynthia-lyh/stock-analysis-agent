@@ -26,7 +26,7 @@ import time
 from ..base import Tool, ToolParameter, tool_action
 from ...memory.rag import create_rag_pipeline
 # from ...core.llm import HelloAgentsLLM
-from ...llm import AgentBrain
+from ...core import AgentBrain
 
 class RAGTool(Tool):
     """RAG工具
