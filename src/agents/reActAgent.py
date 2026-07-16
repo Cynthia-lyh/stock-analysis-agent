@@ -14,6 +14,7 @@ from ..core import Message
 from ..core.config import Config
 
 from .prompt_template import react_system_prompt_template
+from .investment_knowledge import investment_knowledge
 
 from ..tools import MemoryTool, RAGTool,ToolRegistry,MCPTool
 
@@ -58,19 +59,19 @@ class ReActAgent(Agent):
             {"role":"system","content": self.render_system_prompt(react_system_prompt_template)},
             {"role":"user","content": f"<question>{user_input}</question>"}
         ]
-        print(f"messages:{messages}")
-
         # 执行工具调用
         # action='[TOOL_CALL:mcp_get_weather:{"city": "北京"}]'
-        # tool_calls = self._parse_tool_calls(action)
-        # result = self._execute_tool_call(tool_calls['tool_name'], tool_calls['parameters'])
-        # print(f"tool_calls: {tool_calls}")
-        # print(f"🎬 行动: {result}")
-        current_step = 0
+        action='[TOOL_CALL:rag:search=股票 定义 解释]'
+        tool_calls = self._parse_tool_calls(action)
+        result = self._execute_tool_call(tool_calls['tool_name'], tool_calls['parameters'])
+        print(f"tool_calls: {tool_calls}")
+        print(f"🎬 行动: {result}")
+        current_step = 6
         while current_step < self.max_steps:
             current_step += 1
 
             #请求模型
+            print(f"messages:{messages}")
             content = self.llm.think(messages = messages)
             messages.append({"role": "assistant", "content": content})
             print(f"\n\n模型回复：{content}")
@@ -470,27 +471,76 @@ def test():
     response = agent.run(user_input)
     print(f"最终回答: {response}")
 
+def memory_rag():
+    brain = AgentBrain()
+    # agent = ReActAgent(name="TestAgent",llm=brain)
+    # 创建记忆工具
+    memory_tool = MemoryTool(
+        user_id="demo_user_001",
+        memory_types=["working", "episodic", "semantic"]
+    )
 
-def read_file(file_path):
-    """用于读取文件内容"""
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read()
+    # 创建工具注册表
+    tool_registry = ToolRegistry()
+    tool_registry.register_tool(memory_tool)
 
-def write_to_file(file_path, content):
-    """将指定内容写入指定文件"""
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(content.replace("\\n", "\n"))
-    return "写入成功"
+    print("💬 开始智能对话演示...")
+    agent = ReActAgent(name="TestAgent",llm=brain,tool_registry=tool_registry)
 
-def run_terminal_command(command):
-    """用于执行终端命令"""
-    import subprocess
-    run_result = subprocess.run(command, shell=True, capture_output=True, text=True)
-    print(f"命令执行结果：{run_result.stdout}")
-    return f"执行成功：{run_result.stdout}" if run_result.returncode == 0 else f"执行失败：{run_result.stderr}"
+    # 模拟多轮对话
+    conversations = [
+        "你好！我叫李明，是一名软件工程师，专门做Python开发",
+        "我最近在学习机器学习，特别对深度学习感兴趣",
+        "你能推荐一些Python机器学习的库吗？",
+        "你还记得我的名字和职业吗？请结合我的背景给我一些学习建议"
+    ]
+
+    for i, user_input in enumerate(conversations, 1):
+        print(f"\n--- 对话轮次 {i} ---")
+        print(f"👤 用户: {user_input}")
+
+        # SimpleAgent会自动使用memory工具
+        response = agent.run(user_input)
+        print(f"🤖 助手: {response}")
+
+    # 显示记忆摘要
+    print(f"\n📊 最终记忆系统状态:")
+    summary = memory_tool.run({"action": "summary"})
+    print(summary)
+
+def demo_rag_tool():
+    brain = AgentBrain()
+    # 创建RAG工具
+    rag_tool = RAGTool(knowledge_base_path="./combo_knowledge_base")
+
+    # 创建工具注册表
+    tool_registry = ToolRegistry()
+    tool_registry.register_tool(rag_tool)
+    content = investment_knowledge
+    # result = rag_tool.run({"action": "add_text", "text": content})
+    print("💬 开始RAG演示...")
+    agent = ReActAgent(name="TestAgent",llm=brain,tool_registry=tool_registry)
+
+    # 模拟多轮对话
+    conversations = [
+        "市盈率是什么"
+    ]
+    user_input="股票是什么"
+    response = agent.run(user_input)
+    print(f"🤖 助手: {response}")
+
+    # for i, user_input in enumerate(conversations, 1):
+    #     print(f"\n--- 对话轮次 {i} ---")
+    #     print(f"👤 用户: {user_input}")
+
+    #     response = agent.run(user_input)
+    #     print(f"🤖 助手: {response}")
+
 
 def main():
-    test()
+    # test()
+    # memory_rag()
+    demo_rag_tool()
     # demo_mcp_tool()
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ class AgentBrain:
     def think(self,messages,stream=False):
         """核心思考函数：接收提示，返回模型的思考结果"""
         print("\n\n正在请求模型，请稍等...")
+        print(f"messages: {messages}")
         try:
             # 使用客户端调用 Chat Completions API（v1.x 版本写法）
             response = client.chat.completions.create(
@@ -28,6 +29,7 @@ class AgentBrain:
                 stream=stream #流式输出
             )
             content = response.choices[0].message.content
+            print(f"模型思考结果: {content}")
             return content
         except Exception as e:
             return f"思考过程出错: {e}"

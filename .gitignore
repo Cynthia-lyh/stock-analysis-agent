@@ -10,3 +10,5 @@ wheels/
 .venv
 .vscode
 .env
+combo_knowledge_base/
+memory_data/

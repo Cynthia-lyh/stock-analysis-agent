@@ -3,7 +3,7 @@ name = "stock-analysis-agent"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=3.4.3",
     "gradio>=6.19.0",
@@ -13,4 +13,18 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",
     "spacy>=3.8.14",
+    "qdrant-client>=1.9.0",          # 向量数据库（已兼容1.16.0+新API）
+    "neo4j>=5.0.0",                  # 图数据库
+    "scikit-learn>=1.0.0",           # 机器学习工具
+    "transformers>=4.20.0",      # Transformer模型
+    "sentence-transformers>=2.2.0",  # 句子嵌入
+    "torch>=2.11.0",
+    "markitdown>=0.0.1",         # 文档转换
+    "pypdf>=3.9.0",              # PDF处理
+    "pdfminer.six>=20221105",    # PDF解析备选
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'"
 ]

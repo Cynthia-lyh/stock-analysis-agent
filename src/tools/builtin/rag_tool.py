@@ -144,7 +144,7 @@ class RAGTool(Tool):
                 return self._ask(
                     question=question,
                     limit=parameters.get("limit", 5),
-                    enable_advanced_search=parameters.get("enable_advanced_search", True),
+                    enable_advanced_search=parameters.get("enable_advanced_search", False),
                     include_citations=parameters.get("include_citations", True),
                     max_chars=parameters.get("max_chars", 1200),
                     namespace=parameters.get("namespace", "default")
@@ -154,7 +154,7 @@ class RAGTool(Tool):
                     query=parameters.get("query") or parameters.get("question"),
                     limit=parameters.get("limit", 5),
                     min_score=parameters.get("min_score", 0.1),
-                    enable_advanced_search=parameters.get("enable_advanced_search", True),
+                    enable_advanced_search=parameters.get("enable_advanced_search", False),
                     max_chars=parameters.get("max_chars", 1200),
                     include_citations=parameters.get("include_citations", True),
                     namespace=parameters.get("namespace", "default")
@@ -342,7 +342,8 @@ class RAGTool(Tool):
                 # 清理临时文件
                 try:
                     if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                        # os.remove(tmp_path)
+                        pass
                 except Exception:
                     pass
             
@@ -355,7 +356,7 @@ class RAGTool(Tool):
         query: str,
         limit: int = 5,
         min_score: float = 0.1,
-        enable_advanced_search: bool = True,
+        enable_advanced_search: bool = False,
         max_chars: int = 1200,
         include_citations: bool = True,
         namespace: str = "default"
